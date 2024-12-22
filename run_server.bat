@@ -1,0 +1,2 @@
+REM python inference.py     --checkpoint_file ./ckpts/SEMamba_advanced.pth     --input_folder ./noisy_audio     --output_folder ./enhanced_audio     --config ./ckpts/config.yaml
+python server.py --config ./ckpts/config.yaml --checkpoint ./ckpts/SEMamba_advanced.pth
