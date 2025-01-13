@@ -1,2 +1,4 @@
 .DS_Store
 __pycache__
+/scene/generated_audio/*.mp3
+/scene/ambient_sounds/*.mp3
