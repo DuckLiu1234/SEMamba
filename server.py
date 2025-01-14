@@ -7,6 +7,9 @@ import socket
 import logging
 from logging.handlers import RotatingFileHandler
 import inference
+import tensorflow as tf
+import tensorflow_hub as hub
+import numpy as np
 
 if sys.version_info.major == 3:
     from urllib import parse
@@ -30,6 +33,9 @@ logger = logging.getLogger(__name__)
 
 PORT = 8000
 
+# Global YAMNet model
+yamnet_model = None
+
 def initialize_semamba(config_path, checkpoint_path):
     """Initialize SEMAMBA model"""
     try:
@@ -37,6 +43,16 @@ def initialize_semamba(config_path, checkpoint_path):
         logger.info("SEMAMBA model initialized successfully")
     except Exception as e:
         logger.error(f"Failed to initialize SEMAMBA model: {e}")
+        sys.exit(1)
+
+def initialize_yamnet():
+    """Initialize YAMNet model"""
+    global yamnet_model
+    try:
+        yamnet_model = hub.load('https://tfhub.dev/google/yamnet/1')
+        logger.info("YAMNet model initialized successfully")
+    except Exception as e:
+        logger.error(f"Failed to initialize YAMNet model: {e}")
         sys.exit(1)
 
 class Handler(BaseHTTPRequestHandler):
@@ -71,7 +87,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         try:
             logger.info(f"Received POST request from: {self.client_address}")
-            
+
             if sys.version_info.major == 3:
                 urlparts = parse.urlparse(self.path)
             else:
@@ -90,12 +106,41 @@ class Handler(BaseHTTPRequestHandler):
                     t = datetime.datetime.utcnow()
                     time = t.strftime('%Y%m%dT%H%M%SZ')
                     original_filename = str.format('original_{}_{}_{}_{}.wav', time, sample_rates, bits, channel)
-                    
+
                     with open(original_filename, 'wb') as f:
                         f.write(data)
-                    
+
                     logger.info(f"Original file saved: {original_filename}")
-                    
+
+                    # YAMNet sound event detection
+                    try:
+                        with wave.open(original_filename, 'rb') as wav:
+                            audio = np.frombuffer(wav.readframes(-1), dtype=np.int16)
+                            audio = audio.astype(np.float32) / 32768.0
+
+                        scores, embeddings, mel_spec = yamnet_model(audio)
+                        scores = scores.numpy()
+                        mean_scores = np.mean(scores, axis=0)
+
+                        # 檢測重要事件
+                        events = []
+                        if mean_scores[41] > 0.5:  # Doorbell
+                            events.append("Doorbell")
+                        if mean_scores[89] > 0.6:  # Alarm
+                            events.append("Alarm")
+                        if mean_scores[0] > 0.7:   # Speech
+                            events.append("Speech")
+                        if mean_scores[399] > 0.5:  # Door
+                            events.append("Door")
+                        if mean_scores[88] > 0.6:   # Dog
+                            events.append("Dog")
+
+                        if events:
+                            logger.info(f"Detected events: {events}")
+
+                    except Exception as e:
+                        logger.error(f"Error in sound event detection: {e}")
+
                     # Process with SEMAMBA
                     enhanced_filename = f"enhanced_{time}.wav"
                     try:
@@ -103,15 +148,15 @@ class Handler(BaseHTTPRequestHandler):
                         logger.info(f"Audio enhanced: {enhanced_filename}")
                     except Exception as e:
                         logger.error(f"Failed to enhance audio: {e}")
-                        enhanced_filename = original_filename  # 如果增強失敗，使用原始檔案
-                    
+                        enhanced_filename = original_filename
+
                     # Response to client
                     self.send_response(200)
                     self.send_header("Content-type", "text/html;charset=utf-8")
                     self.end_headers()
                     response = f'File processed: {enhanced_filename}'
                     self.wfile.write(response.encode('utf-8'))
-                    
+
                 except Exception as e:
                     logger.error(f"Error processing file: {e}", exc_info=True)
                     self.send_error(500, str(e))
@@ -161,9 +206,10 @@ def main():
         args.ip = get_host_ip()
     if not args.port:
         args.port = PORT
-        
-    # Initialize SEMAMBA
+
+    # Initialize both models
     initialize_semamba(args.config, args.checkpoint)
+    initialize_yamnet()
 
     try:
         logger.info(f"Starting server on {args.ip}:{args.port}")
